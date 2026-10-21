@@ -7,9 +7,9 @@ import pandas as pd
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
-CSV_IN = " "
-CSV_OUT = " "
-REVIEW_OUT = " "
+CSV_IN = r"data\Incorrect Dates.csv" # path to input csv
+CSV_OUT = r"data\Corrected Dates.csv" # path to output csv
+REVIEW_OUT = r"data\Review.csv" # path to review csv
 VIEWER_COL = "TML: 183 | NMF: 0"
 ENDPOINT_COL = "171 - Endpoint_Links"
 DATE_COL = "New_Date"
@@ -109,8 +109,8 @@ for idx, row in df.iterrows(): # iterate over dataframe
             }
         )
         continue
-    if parse(row[DATE_COL]) != api_date:
-        changes.append(
+    if parse(row[DATE_COL]) != api_date: # compare existing CDV date cell with API data
+        changes.append( # records change to be made
             (
                 idx,
                 label,
@@ -119,5 +119,12 @@ for idx, row in df.iterrows(): # iterate over dataframe
                 src
             )
         )
-        df.at[idx, DATE_COL] = api_date.strftime(DATE_FMT)
+        df.at[idx, DATE_COL] = api_date.strftime(DATE_FMT) # applies change to dataframe
     time.sleep(0.3)
+
+print(
+    f"Updated {len(chnages)} rows, {len(review)} need manual review"
+)
+for c in changes:
+    #print(f"    rows{idx} {label}: {old} -> new ({src})")
+    print("     row %s %s: %s -> %s (%s)" % c)
