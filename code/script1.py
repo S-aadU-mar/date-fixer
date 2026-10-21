@@ -123,7 +123,7 @@ for idx, row in df.iterrows(): # iterate over dataframe
     time.sleep(0.3)
 
 print(
-    f"Updated {len(chnages)} rows, {len(review)} need manual review"
+    f"Updated {len(changes)} rows, {len(review)} need manual review"
 )
 for c in changes:
     #print(f"    rows{idx} {label}: {old} -> new ({src})")
