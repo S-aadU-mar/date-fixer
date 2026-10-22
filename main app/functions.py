@@ -353,12 +353,19 @@ def parse(v):
     return pd.to_datetime(v, dayfirst=True).date()
 
 
-def main(input_df, progress=print): # modified to accept dataframe from user-uploaded csv from main app
+def main(input_df, progress=None): # modified to accept dataframe from user-uploaded csv from main app
     df = input_df.astype(str) # modified because already loaded from csv into df by Streamlite side
     if ZONE_COL not in df.columns:
         raise SystemExit(f"Column '{ZONE_COL}' not found in {input_df}")
     report = []  # one row per change or review item
     net_streak = 0
+    total_rows = len(df)
+
+    def notify(current, message):
+        if progress is None:
+            print(message)
+        else:
+            progress(current, total_rows, message)
 
     def add(line, city, old, new, kind, source, url, comment):
         report.append({"csv_line": line, "city": city, "old_date": old or "",
@@ -370,6 +377,7 @@ def main(input_df, progress=print): # modified to accept dataframe from user-upl
             line = idx + 2  # line in the original CSV (header = line 1)
             label = f"{row.iloc[1]}, {row.iloc[3]}"
             old_date = row.get(DATE_COL)
+            notify(idx + 1, f"Checking row {idx + 1} of {total_rows}")
             if SKIP_NO_UPDATION and row.get(STATUS_COL) == "No Updation":
                 continue
 
@@ -378,24 +386,23 @@ def main(input_df, progress=print): # modified to accept dataframe from user-upl
             new_zone, zone_problems = check_zone_codes(row)
             if new_zone is not None and new_zone != row[ZONE_COL]:
                 add(line, label, "", "", "change",
-                    f"{ZONE_COL} case fix: {row[ZONE_COL]} -> {new_zone}", endpoint_urls, "")
-                print(f"[zone fix] line {line} {label}: {row[ZONE_COL]} -> {new_zone}")
+                    "", endpoint_urls,
+                    f"Zone name changed: '{row[ZONE_COL]}' -> '{new_zone}'")
+                notify(idx + 1, f"Zone name change found on CSV line {line}")
             for p in zone_problems:
                 add(line, label, old_date, "", "review", "", endpoint_urls, p)
-                print(f"[review] line {line} {label}: {p}")
+                notify(idx + 1, f"Zone name review needed on CSV line {line}")
 
             # --- date check ---
             api_date, src, used_url, tried, problems = find_date(row)
             if api_date is None:
                 reason = "; ".join(problems) or "no URL in row"
                 add(line, label, old_date, "", "review", "", " | ".join(tried), reason)
-                print(f"[review] line {line} {label}: {reason}")
+                notify(idx + 1, f"Date review needed on CSV line {line}")
                 net_down = bool(problems) and all(LOCAL_NET_TAG in p for p in problems)
                 net_streak = net_streak + 1 if net_down else 0
                 if net_streak >= MAX_NET_STREAK:
-                    print(f"\nSTOPPING at CSV line {line}: {MAX_NET_STREAK} rows in a row "
-                          "failed because your network is down (check the VPN), "
-                          "so the rest would be false failures.")
+                    notify(idx + 1, f"Stopped after {MAX_NET_STREAK} consecutive network failures")
                     break
                 continue
             net_streak = 0
@@ -403,7 +410,7 @@ def main(input_df, progress=print): # modified to accept dataframe from user-upl
             if parse(old_date) != api_date:
                 new = api_date.strftime(DATE_FMT)
                 add(line, label, old_date, new, "change", src, used_url, "")
-                print(f"[update] line {line} {label}: {old_date} -> {new} ({src})")
+                notify(idx + 1, f"Date change found on CSV line {line}")
             time.sleep(DELAY)
     #finally:  # save progress even if you Ctrl+C
     #    pd.DataFrame(report, columns=REPORT_COLS).to_csv(
@@ -423,7 +430,7 @@ def main(input_df, progress=print): # modified to accept dataframe from user-upl
             "review",
             "",
             "",
-            f"RUN ABORTED at this line: {type(e).__name__}: {str(e):[:150]}"
+            f"RUN ABORTED at this line: {type(e).__name__}: {str(e)[:150]}"
             )
         
     return pd.DataFrame(report, columns=REPORT_COLS)
