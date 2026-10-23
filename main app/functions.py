@@ -29,9 +29,13 @@ DATE_COL = "New_Date"
 DATE_FMT = "%d-%m-%Y"  # your CSV uses DD-MM-YYYY
 DATE_TZ = "UTC"        # zone used to turn timestamps into dates, e.g. "America/New_York"
                        # (non-UTC zones on Windows need: pip install tzdata)
+MIN_COLUMNS = 4  # The report label currently uses the second and fourth columns.
 
 USE_METADATA_CREATION_DATE = False  # CreaDate = when metadata was created, not updated
 SKIP_NO_UPDATION = False  # True = leave rows marked "No Updation" untouched
+REQUIRED_COLUMNS = (ZONE_COL, ENDPOINT_COL, DATE_COL) + (
+    (STATUS_COL,) if SKIP_NO_UPDATION else ()
+)
 DELAY = 0.3               # seconds between requests
 TIMEOUT = 20
 
@@ -353,10 +357,26 @@ def parse(v):
     return pd.to_datetime(v, dayfirst=True).date()
 
 
+def validate_input_columns(input_df):
+    """Return the input-column problems that would prevent processing."""
+    missing = [column for column in REQUIRED_COLUMNS if column not in input_df.columns]
+    problems = []
+    if missing:
+        problems.append("Missing required column(s): " + ", ".join(missing))
+    if len(input_df.columns) < MIN_COLUMNS:
+        problems.append(
+            f"The CSV must contain at least {MIN_COLUMNS} columns because the "
+            "report label uses the second and fourth columns."
+        )
+    return problems
+
+
 def main(input_df, progress=None): # modified to accept dataframe from user-uploaded csv from main app
+    column_problems = validate_input_columns(input_df)
+    if column_problems:
+        raise ValueError("Invalid CSV:\n- " + "\n- ".join(column_problems))
+
     df = input_df.astype(str) # modified because already loaded from csv into df by Streamlite side
-    if ZONE_COL not in df.columns:
-        raise SystemExit(f"Column '{ZONE_COL}' not found in {input_df}")
     report = []  # one row per change or review item
     net_streak = 0
     total_rows = len(df)

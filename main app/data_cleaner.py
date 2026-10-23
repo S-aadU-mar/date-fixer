@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from functions import main
+from functions import main, validate_input_columns
 
 
 st.set_page_config(
@@ -16,7 +16,7 @@ st.markdown(
     <style>
     .block-container { padding-top: 2.5rem; padding-bottom: 3rem; }
     .hero { padding: 1.4rem 1.6rem; border-radius: 18px; color: white;
-            background: linear-gradient(120deg, #16324f, #287a8c); margin-bottom: 1.5rem; }
+            background: linear-gradient(120deg, #FF4D4D, #754CC7); margin-bottom: 1.5rem; }
     .hero h1 { margin: 0; font-size: 2.25rem; }
     .hero p { margin: .35rem 0 0; opacity: .85; }
     [data-testid="stMetric"] {
@@ -49,6 +49,13 @@ if uploaded_file is not None:
         input_df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
     except (UnicodeDecodeError, pd.errors.ParserError) as exc:
         st.error(f"Could not read this CSV: {exc}")
+        st.stop()
+
+    column_problems = validate_input_columns(input_df)
+    if column_problems:
+        st.error("This CSV cannot be processed:")
+        for problem in column_problems:
+            st.error(problem)
         st.stop()
 
     st.info(f"Loaded **{len(input_df):,} rows** and **{len(input_df.columns):,} columns**.")
