@@ -282,59 +282,41 @@ def date_from_endpoint(url):
         else:
             raise
 
-    # 1st: the edit date the server endpoint itself reports (editingInfo).
-    d, src = date_from_editing_info(j, label)
+    # Prefer the edit date from the supplied endpoint itself. Child layers are
+    # only consulted when that endpoint has no usable edit date.
+    d, src = date_from_edit_field(j, url, label)
     if d:
         return d, src
 
-    # 2nd: only if the endpoint has no edit date, check child layers' endpoint
-    # edit dates (service-root URLs), then fall back to the attribute column.
+    # A FeatureServer/MapServer URL can be a service root rather than a layer
+    # endpoint. If it has no edit date, inspect child layers before using
+    # service-level fallback dates.
     if not re.search(r"/\d+$", url):
-        layer_dates = []
-        for layer in j.get("layers") or []:
+        layers = j.get("layers") or []
+        layer_edit_dates = []
+        for layer in layers:
             layer_id = layer.get("id")
             if layer_id is None:
                 continue
             layer_url = f"{url}/{layer_id}"
             try:
                 layer_json = layer_info(layer_url)
-            except QUERY_ERRORS:
-                continue
-            d, src = date_from_editing_info(layer_json, "endpoint layer")
-            if d:
-                layer_dates.append((d, src))
-        if layer_dates:
-            return max(layer_dates, key=lambda item: item[0])
-
-    # 3rd: the layer's attribute column (EditDate field) - last resort for edit dates
-    d, src = date_from_edit_field(j, url, label)
-    if d:
-        return d, src
-
-    if not re.search(r"/\d+$", url):
-        layer_dates = []
-        for layer in j.get("layers") or []:
-            layer_id = layer.get("id")
-            if layer_id is None:
-                continue
-            layer_url = f"{url}/{layer_id}"
-            try:
-                d, src = date_from_edit_field(layer_info(layer_url), layer_url, "endpoint layer")
+                d, src = date_from_edit_field(layer_json, layer_url, "endpoint layer")
                 if d:
-                    layer_dates.append((d, src))
+                    layer_edit_dates.append((d, src))
             except QUERY_ERRORS:
                 continue
-        if layer_dates:
-            return max(layer_dates, key=lambda item: item[0])
+        if layer_edit_dates:
+            return max(layer_edit_dates, key=lambda item: item[0])
 
-    # 4th/5th: portal item modified, then metadata (unchanged)
     for lookup in (
+        lambda: date_from_editing_info(j, label),
         lambda: date_from_service_item(j, url, label),
     ):
-        d, src = lookup()
+        d, src = lookup()  # lazy: later (slower) lookups run only if earlier ones find nothing
         if d:
             return d, src
-    return date_from_metadata(url, label)
+    return date_from_metadata(url, label)  # 4th choice
 
 
 def find_date(row):
