@@ -16,7 +16,7 @@ st.markdown(
     <style>
     .block-container { padding-top: 2.5rem; padding-bottom: 3rem; }
     .hero { padding: 1.4rem 1.6rem; border-radius: 18px; color: white;
-            background: linear-gradient(120deg, #FF4D4D, #754CC7); margin-bottom: 1.5rem; }
+            background: linear-gradient(120deg, #FF3B3B, #2534B0); margin-bottom: 1.5rem; }
     .hero h1 { margin: 0; font-size: 2.25rem; }
     .hero p { margin: .35rem 0 0; opacity: .85; }
     [data-testid="stMetric"] {
