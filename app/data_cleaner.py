@@ -93,6 +93,7 @@ is_zone = (
     | report_df["issue"].fillna("").str.contains(
         "Zone_Code_FN", case=False, regex=False
     )
+    | report_df["issue"].fillna("").str.startswith("Zone name changed:", na=False)
 )
 is_change = report_df["updation status"].eq("Updation")
 is_review = report_df["issue"].fillna("").ne("")
