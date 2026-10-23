@@ -137,7 +137,25 @@ def show_report(data, key):
     if data.empty:
         st.success("No items in this view.")
         return
-    st.dataframe(data, use_container_width=True, hide_index=True)
+    st.dataframe(
+        data,
+        column_config={
+            "issue": st.column_config.TextColumn(
+                "issue",
+                width=500,
+                help="Full issue details for this report item",
+            ),
+        },
+        use_container_width=True,
+        hide_index=True,
+    )
+    issues = data[data["issue"].fillna("").ne("")]
+    if not issues.empty:
+        with st.expander(f"View full issue details ({len(issues)})"):
+            for _, row in issues.iterrows():
+                location = f"CSV line {row['csv_line']} - {row['city']}"
+                st.markdown(f"**{location}**")
+                st.write(row["issue"])
     st.download_button(
         "Download this view",
         data.to_csv(index=False).encode("utf-8-sig"),

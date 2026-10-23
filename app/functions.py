@@ -281,13 +281,60 @@ def date_from_endpoint(url):
             j = get_json_fallback(url)
         else:
             raise
-    for lookup in (lambda: date_from_edit_field(j, url, label),
-                   lambda: date_from_editing_info(j, label),
-                   lambda: date_from_service_item(j, url, label)):
-        d, src = lookup()  # lazy: later (slower) lookups run only if earlier ones find nothing
+
+    # 1st: the edit date the server endpoint itself reports (editingInfo).
+    d, src = date_from_editing_info(j, label)
+    if d:
+        return d, src
+
+    # 2nd: only if the endpoint has no edit date, check child layers' endpoint
+    # edit dates (service-root URLs), then fall back to the attribute column.
+    if not re.search(r"/\d+$", url):
+        layer_dates = []
+        for layer in j.get("layers") or []:
+            layer_id = layer.get("id")
+            if layer_id is None:
+                continue
+            layer_url = f"{url}/{layer_id}"
+            try:
+                layer_json = layer_info(layer_url)
+            except QUERY_ERRORS:
+                continue
+            d, src = date_from_editing_info(layer_json, "endpoint layer")
+            if d:
+                layer_dates.append((d, src))
+        if layer_dates:
+            return max(layer_dates, key=lambda item: item[0])
+
+    # 3rd: the layer's attribute column (EditDate field) - last resort for edit dates
+    d, src = date_from_edit_field(j, url, label)
+    if d:
+        return d, src
+
+    if not re.search(r"/\d+$", url):
+        layer_dates = []
+        for layer in j.get("layers") or []:
+            layer_id = layer.get("id")
+            if layer_id is None:
+                continue
+            layer_url = f"{url}/{layer_id}"
+            try:
+                d, src = date_from_edit_field(layer_info(layer_url), layer_url, "endpoint layer")
+                if d:
+                    layer_dates.append((d, src))
+            except QUERY_ERRORS:
+                continue
+        if layer_dates:
+            return max(layer_dates, key=lambda item: item[0])
+
+    # 4th/5th: portal item modified, then metadata (unchanged)
+    for lookup in (
+        lambda: date_from_service_item(j, url, label),
+    ):
+        d, src = lookup()
         if d:
             return d, src
-    return date_from_metadata(url, label)  # 4th choice
+    return date_from_metadata(url, label)
 
 
 def find_date(row):
@@ -480,11 +527,14 @@ def main(input_df, progress=None): # modified to accept dataframe from user-uplo
             old_value = parse(old_date)
             new_value = parse(new_date)
             primary = api_date.strftime(DATE_FMT)
-            should_update = (
-                old_value is None or api_date >= old_value
-            ) and (new_value is None or api_date != new_value)
+            comparison_value = new_value if new_value is not None else old_value
             if api_date != new_value:
-                status = "Updation" if should_update else "No Updation"
+                if comparison_value is None or api_date > comparison_value:
+                    status = "Updation"
+                elif api_date < comparison_value:
+                    status = "Date Issue"
+                else:
+                    status = "No Updation"
                 add(
                     line,
                     label,
