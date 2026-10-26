@@ -6,6 +6,7 @@ Reads the input CSV (left untouched) and writes ONE report CSV that lists
 every change and every row needing review.
 """
 import json
+from io import BytesIO
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -15,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
+from dateparser.search import search_dates
+from pypdf import PdfReader
 
 #CSV_IN = r"data\Test Data.csv"
 REPORT_OUT = r"data\script8\Report.csv"  # the single changes + review report
@@ -24,6 +27,11 @@ REPORT_COLS = ["csv_line", "city", "old_date", "new_date", "primary date",
 ZONE_COL = "Zone_Code_FN"  # comma-separated field names that must exist in the endpoint
 
 ENDPOINT_COL = "171 - Endpoint_Links"
+PDF_LINK_COLUMNS = ("FLUM_Links", "FLUM_Link")
+SOURCE_MARKERS = {
+    "pdf": re.compile(r"(?<![a-z])pdf(?![a-z])", re.IGNORECASE),
+    "arcgis": re.compile(r"(?<![a-z])arcgis(?![a-z])", re.IGNORECASE),
+}
 STATUS_COL = "U: 146 | NU: 37 | I: 0"
 OLD_DATE_COL = "Old_Date"
 DATE_COL = "New_Date"
@@ -72,6 +80,10 @@ class CreationDateOnly(Exception):
     pass
 
 
+class PDFDateNotFound(Exception):
+    pass
+
+
 LOCAL_NET_HINTS = ("getaddrinfo failed", "NameResolutionError", "WinError 10013",
                    "Temporary failure in name resolution")
 LOCAL_NET_TAG = "local network problem"
@@ -90,7 +102,7 @@ def explain(e):
     """Short human-readable reason for the review file."""
     if is_local_net_error(e):
         return f"{LOCAL_NET_TAG} (VPN dropped, DNS down or firewall) - rerun this row"
-    if isinstance(e, (ArcGISError, NotJSON, CreationDateOnly)):
+    if isinstance(e, (ArcGISError, NotJSON, CreationDateOnly, PDFDateNotFound)):
         return str(e)
     if isinstance(e, requests.exceptions.SSLError):
         return "SSL error (server does not speak HTTPS on this port, http also failed)"
@@ -150,7 +162,65 @@ def split_urls(cell):
     return [p.strip(" ,") for p in parts if p.strip().lower().startswith("http")]
 
 
+def row_source_kind(row):
+    """Return an explicit PDF/ArcGIS source marker when the row provides one."""
+    for value in row:
+        text = str(value)
+        if "http://" in text.lower() or "https://" in text.lower():
+            continue
+        if SOURCE_MARKERS["pdf"].search(text):
+            return "pdf"
+        if SOURCE_MARKERS["arcgis"].search(text):
+            return "arcgis"
+    return None
+
+
+def _date_url_columns(row, source_kind=None):
+    """Return date-bearing URL columns, preferring the dedicated PDF link column."""
+    pdf_columns = [
+        column for column in row.index
+        if _column_key(column) in {_column_key(value) for value in PDF_LINK_COLUMNS}
+    ]
+    columns = list(pdf_columns)
+    if ENDPOINT_COL in row.index:
+        columns.append(ENDPOINT_COL)
+    if source_kind == "pdf":
+        columns.extend(
+            column for column in row.index
+            if column not in columns and split_urls(row.get(column))
+        )
+    return tuple(columns)
+
+
 # ---------- date extraction ----------
+def is_pdf_url(url):
+    """Return whether the URL points to a PDF based on its path extension."""
+    return url.split("?", 1)[0].split("#", 1)[0].lower().endswith(".pdf")
+
+
+def date_from_pdf(url):
+    """Extract the latest date with an explicit four-digit year from a PDF."""
+    reader = PdfReader(BytesIO(get_bytes(url)))
+    text = "".join(page.extract_text() or "" for page in reader.pages)
+    results = search_dates(
+        text,
+        settings={
+            "DATE_ORDER": "MDY",
+            "PREFER_DATES_FROM": "past",
+            "STRICT_PARSING": True,
+        },
+    )
+    valid_dates = [
+        (parsed_date.date(), matched_text)
+        for matched_text, parsed_date in (results or [])
+        if re.search(r"\b(?:19|20)\d{2}\b", matched_text)
+    ]
+    if not valid_dates:
+        raise PDFDateNotFound("PDF contains no date with an explicit four-digit year")
+    latest_date, _ = max(valid_dates, key=lambda item: item[0])
+    return latest_date, "PDF"
+
+
 def item_modified(base, item_id):
     item = get_json(f"{base}/content/items/{item_id}")
     return from_epoch_ms(item["modified"]) if item.get("modified") else None
@@ -321,10 +391,15 @@ def date_from_endpoint(url):
 
 def find_date(row):
     """Return (date, source, used_url, tried_urls, list_of_problems).
-    Tries every endpoint URL in the row. used_url is the link that gave the date."""
+    Tries endpoint URLs and PDF links in the row. used_url is the link that gave
+    the     date."""
     problems, tried = [], []
-    for col, fn in ((ENDPOINT_COL, date_from_endpoint),):  # endpoint links only
+    source_kind = row_source_kind(row)
+    columns = _date_url_columns(row, source_kind)
+    for col in columns:
         for url in split_urls(row.get(col)):
+            is_pdf = source_kind == "pdf" or is_pdf_url(url)
+            fn = date_from_pdf if is_pdf else date_from_endpoint
             tried.append(url)
             try:
                 d, src = fn(url)
@@ -339,8 +414,12 @@ def find_date(row):
 
 def endpoint_field_names(row):
     """All field names (exact case) exposed by the row's endpoint URL(s)."""
+    if row_source_kind(row) == "pdf":
+        return set(), []
     names, errors = set(), []
     for url in split_urls(row.get(ENDPOINT_COL)):
+        if is_pdf_url(url):
+            continue
         try:
             names.update(f["name"] for f in layer_info(url).get("fields") or [])
         except Exception as e:
@@ -358,6 +437,8 @@ def check_zone_codes(row):
     cell = row.get(ZONE_COL)
     if not isinstance(cell, str) or not cell.strip():
         return None, []  # empty: ignore
+    if row_source_kind(row) == "pdf":
+        return None, []
     values = [v.strip() for v in cell.split(",") if v.strip()]
     fields, errors = endpoint_field_names(row)
     if not fields:
