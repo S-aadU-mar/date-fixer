@@ -38,6 +38,7 @@ DATE_COL = "New_Date"
 DATE_FMT = "%d-%m-%Y"  # your CSV uses DD-MM-YYYY
 DATE_TZ = "UTC"        # zone used to turn timestamps into dates, e.g. "America/New_York"
                        # (non-UTC zones on Windows need: pip install tzdata)
+PDF_FALLBACK_YEAR = None  # optional year when a PDF has no usable date metadata
 MIN_COLUMNS = 4  # The report label currently uses the second and fourth columns.
 
 USE_METADATA_CREATION_DATE = False  # CreaDate = when metadata was created, not updated
@@ -198,8 +199,45 @@ def is_pdf_url(url):
     return url.split("?", 1)[0].split("#", 1)[0].lower().endswith(".pdf")
 
 
+def _pdf_metadata_date(value):
+    """Return a date from a pypdf metadata value when it contains one."""
+    if isinstance(value, datetime):
+        return value.date()
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    match = re.search(
+        r"(?:^D:)?(?P<year>\d{4})(?P<month>\d{2})?(?P<day>\d{2})?",
+        value,
+    )
+    if not match:
+        return None
+    try:
+        return datetime(
+            int(match["year"]),
+            int(match["month"] or 1),
+            int(match["day"] or 1),
+        ).date()
+    except ValueError:
+        return None
+
+
+def _pdf_metadata_dates(reader):
+    """Return metadata dates, preferring modification over creation date."""
+    metadata = reader.metadata or {}
+    values = (
+        metadata.get("/ModDate") or metadata.get("modification_date"),
+        metadata.get("/CreationDate") or metadata.get("creation_date"),
+    )
+    return tuple(
+        date
+        for value in values
+        if (date := _pdf_metadata_date(value)) is not None
+    )
+
+
 def date_from_pdf(url):
-    """Extract the latest date with an explicit four-digit year from a PDF."""
+    """Extract a PDF date, using metadata/settings for a missing year."""
     reader = PdfReader(BytesIO(get_bytes(url)))
     text = "".join(page.extract_text() or "" for page in reader.pages)
     results = search_dates(
@@ -210,15 +248,40 @@ def date_from_pdf(url):
             "STRICT_PARSING": True,
         },
     )
-    valid_dates = [
+    metadata_dates = _pdf_metadata_dates(reader)
+    explicit_dates = [
         (parsed_date.date(), matched_text)
         for matched_text, parsed_date in (results or [])
         if re.search(r"\b(?:19|20)\d{2}\b", matched_text)
     ]
-    if not valid_dates:
-        raise PDFDateNotFound("PDF contains no date with an explicit four-digit year")
-    latest_date, _ = max(valid_dates, key=lambda item: item[0])
-    return latest_date, "PDF"
+    if explicit_dates:
+        latest_date, _ = max(explicit_dates, key=lambda item: item[0])
+        return latest_date, "PDF"
+
+    fallback_year = metadata_dates[0].year if metadata_dates else PDF_FALLBACK_YEAR
+    if fallback_year:
+        dates_with_year = []
+        for matched_text, parsed_date in results or []:
+            if not re.search(r"\b\d{1,2}[/-]\d{1,2}\b|\b[A-Za-z]{3,9}\s+\d{1,2}\b",
+                             matched_text):
+                continue
+            try:
+                dates_with_year.append((
+                    datetime(fallback_year, parsed_date.month, parsed_date.day).date(),
+                    matched_text,
+                ))
+            except ValueError:
+                continue
+        if dates_with_year:
+            latest_date, _ = max(dates_with_year, key=lambda item: item[0])
+            source = "PDF (metadata year)" if metadata_dates else "PDF (configured year)"
+            return latest_date, source
+
+    if metadata_dates:
+        return metadata_dates[0], "PDF metadata"
+    raise PDFDateNotFound(
+        "PDF contains no usable date or metadata year"
+    )
 
 
 def item_modified(base, item_id):
