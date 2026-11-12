@@ -29,6 +29,8 @@ st.markdown(
             background: linear-gradient(120deg, #2534B0, #126E82); margin-bottom: 1.5rem; }
     .hero h1 { margin: 0; font-size: 2.25rem; }
     .hero p { margin: .35rem 0 0; opacity: .85; }
+    .city-details { border-bottom: 1px solid rgba(128, 128, 128, .35);
+                    margin-bottom: 1rem; padding-bottom: .35rem; }
     [data-testid="stMetric"] {
         background: rgba(255, 255, 255, .08);
         border: 1px solid rgba(255, 255, 255, .18);
@@ -91,6 +93,7 @@ locations = list_locations()
 if locations.empty:
     st.info("No cities are imported yet. Run the poller after adding source CSV files.")
 else:
+    detail_container = st.container()
     display_locations = locations.drop(columns=["location_id"])
     selected = st.dataframe(
         display_locations,
@@ -106,14 +109,19 @@ else:
         details = get_location_details(location_id)
         if details:
             location = details["location"]
-            st.subheader(f"{location['name']}, {location['state']}")
-            metadata = details["metadata"]
-            detail_columns = st.columns(2)
-            detail_columns[0].write(f"**County:** {location['county'] or '—'}")
-            detail_columns[1].write(f"**Source file:** {location['source_file'] or '—'}")
-            with st.expander("Imported attributes", expanded=True):
-                st.json(metadata)
-            st.markdown("#### Sources")
-            st.dataframe(details["sources"], use_container_width=True, hide_index=True)
-            st.markdown("#### Validation history")
-            st.dataframe(details["observations"], use_container_width=True, hide_index=True)
+            with detail_container:
+                st.markdown(
+                    f'<div class="city-details"><h3>{location["name"]}, '
+                    f'{location["state"]}</h3></div>',
+                    unsafe_allow_html=True,
+                )
+                metadata = details["metadata"]
+                detail_columns = st.columns(2)
+                detail_columns[0].write(f"**County:** {location['county'] or '—'}")
+                detail_columns[1].write(f"**Source file:** {location['source_file'] or '—'}")
+                with st.expander("Imported attributes", expanded=True):
+                    st.json(metadata)
+                st.markdown("#### Sources")
+                st.dataframe(details["sources"], use_container_width=True, hide_index=True)
+                st.markdown("#### Validation history")
+                st.dataframe(details["observations"], use_container_width=True, hide_index=True)
