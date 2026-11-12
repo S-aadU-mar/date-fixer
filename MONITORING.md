@@ -22,11 +22,25 @@ ArcGIS zoning maps when an ArcGIS endpoint is available.
    The database records baselines, unchanged checks, updates, and review
    failures.
 
+## Independent nightly polling
+
+Run the poller from the repository root with:
+
+```powershell
+python -m app.nightly_poll
+```
+
+The command imports CSV sources, runs the database poll, prints a summary, and
+returns a non-zero exit code if the import or poll fails. Schedule this command
+with Windows Task Scheduler. Streamlit can remain running independently and
+will display the records written by the poller after refresh.
+
 The generated database is `data\monitoring.sqlite3` and is ignored by Git.
 Update events are stored in the `alert_events` table for later delivery through
-email, Slack, or an authenticated dashboard. Polling is currently manual;
-automatic scheduling, employee authentication, alert acknowledgement, and
-support for non-ArcGIS geometry formats remain deferred.
+email, Slack, or an authenticated dashboard. The Streamlit button remains
+available for manual checks; scheduled polling should use the independent
+command above. Employee authentication, alert acknowledgement, and support
+for non-ArcGIS geometry formats remain deferred.
 
 ## Current frontend decision
 
