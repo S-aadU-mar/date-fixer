@@ -1,0 +1,302 @@
+"""SQLite-backed zoning source import and polling."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+
+try:
+    from .functions import find_date, split_urls
+except ImportError:
+    from functions import find_date, split_urls
+
+
+DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "monitoring.sqlite3"
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS locations (
+    id INTEGER PRIMARY KEY,
+    external_id TEXT,
+    name TEXT NOT NULL,
+    county TEXT,
+    state TEXT,
+    source_key TEXT NOT NULL UNIQUE,
+    source_file TEXT,
+    raw_metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sources (
+    id INTEGER PRIMARY KEY,
+    location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('arcgis', 'pdf', 'other')),
+    url TEXT NOT NULL,
+    UNIQUE(location_id, kind, url)
+);
+CREATE TABLE IF NOT EXISTS poll_runs (
+    id INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    checked_count INTEGER NOT NULL DEFAULT 0,
+    updated_count INTEGER NOT NULL DEFAULT 0,
+    review_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY,
+    location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    poll_run_id INTEGER NOT NULL REFERENCES poll_runs(id) ON DELETE CASCADE,
+    observed_date TEXT,
+    source TEXT,
+    url TEXT,
+    status TEXT NOT NULL,
+    issue TEXT,
+    observed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alert_events (
+    id INTEGER PRIMARY KEY,
+    location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    observation_id INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    acknowledged_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_observations_location ON observations(location_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_events_created ON alert_events(created_at DESC);
+"""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.executescript(SCHEMA)
+    return connection
+
+
+def _column(df: pd.DataFrame, *names: str) -> str | None:
+    def normalize(value: str) -> str:
+        value = re.sub(r"^\s*\d+\s*-\s*", "", value)
+        return "".join(ch.lower() for ch in value if ch.isalnum())
+
+    normalized = {normalize(str(column)): column for column in df.columns}
+    for name in names:
+        key = normalize(name)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def _value(row: pd.Series, column: str | None) -> str:
+    if not column or pd.isna(row.get(column)):
+        return ""
+    return str(row.get(column)).strip()
+
+
+def _source_kind(value: str, url: str) -> str:
+    text = f"{value} {url}".lower()
+    if "pdf" in text or url.lower().split("?", 1)[0].endswith(".pdf"):
+        return "pdf"
+    if "arcgis" in text or "featureserver" in text or "mapserver" in text:
+        return "arcgis"
+    return "other"
+
+
+def _location_key(external_id: str, name: str, county: str, state: str) -> str:
+    identity = external_id or "|".join((name.casefold(), county.casefold(), state.casefold()))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def import_csv_files(
+    csv_paths: Iterable[str | Path],
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, int]:
+    """Import CSV rows idempotently and return row/location/source counts."""
+    imported = locations = sources = 0
+    connection = connect(db_path)
+    now = utc_now()
+    try:
+        for csv_path in csv_paths:
+            path = Path(csv_path)
+            dataframe = pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+            id_col = _column(dataframe, "IDs", "ID")
+            name_col = _column(dataframe, "Cities", "City", "Name")
+            county_col = _column(dataframe, "Counties", "County")
+            state_col = _column(dataframe, "States", "State")
+            endpoint_col = _column(dataframe, "Endpoint_Links", "Endpoint Links")
+            pdf_col = _column(dataframe, "FLUM_Links", "FLUM_Link", "PDF_Link")
+            kind_col = _column(dataframe, "Source", "Type")
+            if not name_col or not state_col:
+                continue
+            for _, row in dataframe.iterrows():
+                imported += 1
+                external_id = _value(row, id_col)
+                name = _value(row, name_col)
+                county = _value(row, county_col)
+                state = _value(row, state_col)
+                if not name:
+                    continue
+                source_key = _location_key(external_id, name, county, state)
+                metadata = {
+                    str(column): _value(row, str(column))
+                    for column in dataframe.columns
+                    if _value(row, str(column))
+                }
+                connection.execute(
+                    """
+                    INSERT INTO locations
+                        (external_id, name, county, state, source_key, source_file, raw_metadata, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_key) DO UPDATE SET
+                        external_id=excluded.external_id, name=excluded.name,
+                        county=excluded.county, state=excluded.state,
+                        source_file=excluded.source_file, raw_metadata=excluded.raw_metadata,
+                        updated_at=excluded.updated_at
+                    """,
+                    (external_id, name, county, state, source_key, path.name,
+                     json.dumps(metadata), now, now),
+                )
+                location_id = connection.execute(
+                    "SELECT id FROM locations WHERE source_key=?", (source_key,)
+                ).fetchone()["id"]
+                urls = []
+                urls.extend(("arcgis", url) for url in split_urls(_value(row, endpoint_col)))
+                urls.extend(("pdf", url) for url in split_urls(_value(row, pdf_col)))
+                if not urls and kind_col:
+                    for column in dataframe.columns:
+                        for url in split_urls(_value(row, str(column))):
+                            urls.append((_source_kind(_value(row, kind_col), url), url))
+                for kind, url in urls:
+                    before = connection.total_changes
+                    connection.execute(
+                        "INSERT OR IGNORE INTO sources(location_id, kind, url) VALUES (?, ?, ?)",
+                        (location_id, kind, url),
+                    )
+                    sources += int(connection.total_changes > before)
+            locations = connection.execute("SELECT COUNT(*) FROM locations").fetchone()[0]
+        connection.commit()
+    finally:
+        connection.close()
+    return {"rows": imported, "locations": locations, "sources": sources}
+
+
+def _latest_observation(connection: sqlite3.Connection, location_id: int) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT * FROM observations WHERE location_id=? ORDER BY observed_at DESC, id DESC LIMIT 1",
+        (location_id,),
+    ).fetchone()
+
+
+def _poll_row(location: sqlite3.Row, sources: list[sqlite3.Row]) -> pd.Series:
+    values = {"Cities": location["name"], "Counties": location["county"], "States": location["state"]}
+    values["Source"] = " ".join(source["kind"] for source in sources)
+    values["171 - Endpoint_Links"] = " ".join(
+        source["url"] for source in sources if source["kind"] == "arcgis"
+    )
+    values["FLUM_Link"] = " ".join(
+        source["url"] for source in sources if source["kind"] == "pdf"
+    )
+    return pd.Series(values)
+
+
+def poll_database(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, int]:
+    """Poll every imported location and persist observations and update alerts."""
+    connection = connect(db_path)
+    started = utc_now()
+    run_id = connection.execute(
+        "INSERT INTO poll_runs(started_at, status) VALUES (?, 'running')", (started,)
+    ).lastrowid
+    counts = {"checked": 0, "updated": 0, "review": 0}
+    try:
+        locations = connection.execute("SELECT * FROM locations ORDER BY name").fetchall()
+        for location in locations:
+            sources = connection.execute(
+                "SELECT * FROM sources WHERE location_id=? ORDER BY kind, id",
+                (location["id"],),
+            ).fetchall()
+            observed_at = utc_now()
+            date, source, url, _, problems = find_date(_poll_row(location, sources))
+            previous = _latest_observation(connection, location["id"])
+            previous_date = previous["observed_date"] if previous else None
+            issue = "; ".join(problems) if problems else None
+            if date is None:
+                status = "review"
+                counts["review"] += 1
+                observed_date = None
+            elif previous_date is None:
+                status = "baseline"
+                observed_date = date.isoformat()
+            elif date == datetime.fromisoformat(previous_date).date():
+                status = "unchanged"
+                observed_date = date.isoformat()
+            elif date > datetime.fromisoformat(previous_date).date():
+                status = "updated"
+                observed_date = date.isoformat()
+                counts["updated"] += 1
+            else:
+                status = "changed"
+                observed_date = date.isoformat()
+            observation_id = connection.execute(
+                """
+                INSERT INTO observations
+                    (location_id, poll_run_id, observed_date, source, url, status, issue, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (location["id"], run_id, observed_date, source, url, status, issue, observed_at),
+            ).lastrowid
+            if status == "updated":
+                connection.execute(
+                    """
+                    INSERT INTO alert_events(location_id, observation_id, event_type, message, created_at)
+                    VALUES (?, ?, 'updated', ?, ?)
+                    """,
+                    (location["id"], observation_id,
+                     f"Attention! {location['name']} updated its zoning source date to {observed_date}.",
+                     observed_at),
+                )
+            counts["checked"] += 1
+        connection.execute(
+            """
+            UPDATE poll_runs SET completed_at=?, status='complete',
+                checked_count=?, updated_count=?, review_count=? WHERE id=?
+            """,
+            (utc_now(), counts["checked"], counts["updated"], counts["review"], run_id),
+        )
+        connection.commit()
+    except (OSError, sqlite3.Error, ValueError):
+        connection.execute("UPDATE poll_runs SET completed_at=?, status='failed' WHERE id=?",
+                           (utc_now(), run_id))
+        connection.commit()
+        raise
+    finally:
+        connection.close()
+    return counts
+
+
+def list_alerts(db_path: str | Path = DEFAULT_DB_PATH, limit: int = 50) -> pd.DataFrame:
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT a.created_at, l.name, l.county, l.state, a.message, a.acknowledged_at
+            FROM alert_events a JOIN locations l ON l.id=a.location_id
+            ORDER BY a.created_at DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return pd.DataFrame([dict(row) for row in rows])
+    finally:
+        connection.close()

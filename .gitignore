@@ -1,2 +1,6 @@
 /data
 personal.txt
+.venv/
+data/monitoring.sqlite3
+data/monitoring.sqlite3-shm
+data/monitoring.sqlite3-wal

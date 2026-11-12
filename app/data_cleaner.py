@@ -1,7 +1,11 @@
+from pathlib import Path
+import sqlite3
+
 import pandas as pd
 import streamlit as st
 
 from functions import main, validate_input_columns
+from monitoring import DEFAULT_DB_PATH, import_csv_files, poll_database
 
 
 st.set_page_config(
@@ -43,6 +47,35 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
     st.caption("Your file is processed in this session and is not modified.")
     run_check = st.button("Run validation", type="primary", use_container_width=True)
+    st.divider()
+    st.header("Monitoring foundation")
+    st.caption("Import the existing source files, then run a manual poll.")
+    import_sources = st.button("Import source CSVs", use_container_width=True)
+    poll_sources = st.button("Poll imported sources", use_container_width=True)
+
+if import_sources:
+    source_files = sorted(Path(__file__).resolve().parents[1].joinpath("data").glob("*.csv"))
+    try:
+        result = import_csv_files(source_files)
+        st.sidebar.success(
+            f"Imported {result['rows']:,} rows, {result['locations']:,} locations, "
+            f"{result['sources']:,} sources."
+        )
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        st.sidebar.error(f"Import failed: {exc}")
+
+if poll_sources:
+    if not DEFAULT_DB_PATH.exists():
+        st.sidebar.error("Import source CSVs before polling.")
+    else:
+        try:
+            result = poll_database()
+            st.sidebar.success(
+                f"Checked {result['checked']:,}; updated {result['updated']:,}; "
+                f"reviews {result['review']:,}."
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            st.sidebar.error(f"Poll failed: {type(exc).__name__}: {exc}")
 
 if uploaded_file is not None:
     try:
@@ -101,6 +134,32 @@ date_changes = report_df[is_change & ~is_zone]
 zone_changes = report_df[is_change & is_zone]
 date_reviews = report_df[is_review & ~is_zone]
 zone_reviews = report_df[is_review & is_zone]
+
+st.divider()
+st.subheader("Notifications")
+st.caption("Updation flags and issues detected by the latest manual validation run.")
+
+if not is_change.any() and not is_review.any():
+    st.success("No updates or issues detected.")
+else:
+    notification_columns = st.columns(2)
+    with notification_columns[0]:
+        st.markdown(f"#### Updation flags ({int(is_change.sum())})")
+        if date_changes.empty and zone_changes.empty:
+            st.success("No updation flags detected.")
+        else:
+            for _, row in report_df[is_change].iterrows():
+                location = row["city"]
+                source_date = row["primary date"] or "new source value"
+                st.success(f"**{location}** updated — {source_date}")
+    with notification_columns[1]:
+        st.markdown(f"#### Issues ({int(is_review.sum())})")
+        if date_reviews.empty and zone_reviews.empty:
+            st.success("No issues detected.")
+        else:
+            for _, row in report_df[is_review].iterrows():
+                issue = row["issue"] or "Manual review required"
+                st.warning(f"**{row['city']}** — {issue}")
 
 st.divider()
 st.subheader("Validation summary")
