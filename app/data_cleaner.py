@@ -11,7 +11,7 @@ from monitoring import (
     count_open_alerts,
     get_location_details,
     import_csv_files,
-    load_arcgis_layers,
+    load_arcgis_layers_cached,
     list_alerts,
     list_locations,
     poll_database,
@@ -181,8 +181,9 @@ else:
                     )
                     if arcgis_urls:
                         try:
-                            loaded_layers, layer_errors = load_arcgis_layers(
-                                arcgis_urls[0]
+                            loaded_layers, layer_errors = load_arcgis_layers_cached(
+                                arcgis_urls[0],
+                                db_path=DEFAULT_DB_PATH,
                             )
                             all_bounds = []
                             for layer_url, layer_geojson in loaded_layers:

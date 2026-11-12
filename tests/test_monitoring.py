@@ -13,6 +13,7 @@ from app.monitoring import (
     get_location_details,
     import_csv_files,
     list_locations,
+    load_arcgis_layers_cached,
     poll_database,
 )
 
@@ -123,6 +124,68 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(len(loaded_layers), 2)
         self.assertEqual(errors, [])
         self.assertEqual(get.call_count, 2)
+
+    @patch("app.monitoring.load_arcgis_layers")
+    def test_cached_arcgis_layers_are_reused(self, load_layers):
+        layers = [
+            (
+                "https://example.test/FeatureServer/0",
+                {"type": "FeatureCollection", "features": []},
+            )
+        ]
+        load_layers.return_value = (layers, [])
+        cache_dir = Path(self.temp_dir.name) / "geometry_cache"
+
+        first_layers, first_errors = load_arcgis_layers_cached(
+            "https://example.test/FeatureServer",
+            db_path=self.db_path,
+            cache_dir=cache_dir,
+        )
+        second_layers, second_errors = load_arcgis_layers_cached(
+            "https://example.test/FeatureServer",
+            db_path=self.db_path,
+            cache_dir=cache_dir,
+        )
+
+        self.assertEqual(first_layers, layers)
+        self.assertEqual(first_errors, [])
+        self.assertEqual(second_layers, layers)
+        self.assertEqual(second_errors, [])
+        load_layers.assert_called_once()
+        connection = connect(self.db_path)
+        try:
+            self.assertEqual(
+                connection.execute("SELECT status, format FROM geometry_cache").fetchone()[
+                    "status"
+                ],
+                "complete",
+            )
+        finally:
+            connection.close()
+
+    @patch("app.monitoring.load_arcgis_layers")
+    def test_stale_cache_is_used_when_refresh_fails(self, load_layers):
+        layers = [
+            (
+                "https://example.test/FeatureServer/0",
+                {"type": "FeatureCollection", "features": []},
+            )
+        ]
+        load_layers.side_effect = [(layers, []), ValueError("service unavailable")]
+        cache_dir = Path(self.temp_dir.name) / "geometry_cache"
+        url = "https://example.test/FeatureServer"
+
+        load_arcgis_layers_cached(url, self.db_path, cache_dir)
+        cached_layers, cache_errors = load_arcgis_layers_cached(
+            url,
+            self.db_path,
+            cache_dir,
+            max_age_seconds=-1,
+        )
+
+        self.assertEqual(cached_layers, layers)
+        self.assertEqual(len(cache_errors), 1)
+        self.assertIn("Using stale geometry cache", cache_errors[0])
 
 
 if __name__ == "__main__":

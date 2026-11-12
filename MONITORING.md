@@ -15,9 +15,9 @@ ArcGIS zoning maps when an ArcGIS endpoint is available.
    `data\` are imported automatically, deduplicated, and their ArcGIS/PDF URLs
    are preserved.
 3. Select a city row to view its imported metadata, source URLs, validation
-   history, and available zoning layers. ArcGIS layers are loaded from the
-   source endpoint when the detail view is opened; they are not yet cached or
-   converted into a common geometry format.
+   history, and available zoning layers. ArcGIS layers are persisted as
+   GeoJSON under `data\geometry_cache\` and reused for 24 hours before refresh.
+   If a refresh fails, an available stale cache is displayed with a warning.
 4. Each source is checked with the existing ArcGIS/PDF date extraction logic.
    The database records baselines, unchanged checks, updates, and review
    failures.
@@ -26,7 +26,7 @@ The generated database is `data\monitoring.sqlite3` and is ignored by Git.
 Update events are stored in the `alert_events` table for later delivery through
 email, Slack, or an authenticated dashboard. Polling is currently manual;
 automatic scheduling, employee authentication, alert acknowledgement, and
-cached geometry retrieval remain deferred.
+support for non-ArcGIS geometry formats remain deferred.
 
 ## Current frontend decision
 

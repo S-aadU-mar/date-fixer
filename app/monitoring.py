@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -20,6 +21,8 @@ except ImportError:
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "monitoring.sqlite3"
+DEFAULT_GEOMETRY_CACHE_DIR = DEFAULT_DB_PATH.parent / "geometry_cache"
+GEOMETRY_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS locations (
     id INTEGER PRIMARY KEY,
@@ -68,6 +71,16 @@ CREATE TABLE IF NOT EXISTS alert_events (
     message TEXT NOT NULL,
     created_at TEXT NOT NULL,
     acknowledged_at TEXT
+);
+CREATE TABLE IF NOT EXISTS geometry_cache (
+    id INTEGER PRIMARY KEY,
+    source_url TEXT NOT NULL UNIQUE,
+    format TEXT NOT NULL,
+    geojson_path TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_observations_location ON observations(location_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alert_events_created ON alert_events(created_at DESC);
@@ -451,6 +464,135 @@ def load_arcgis_layers(
     if not loaded_layers:
         raise ValueError("Unable to load any ArcGIS layers. " + " | ".join(errors))
     return loaded_layers, errors
+
+
+def _cache_path(source_url: str, cache_dir: Path) -> Path:
+    digest = hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+    return cache_dir / f"{digest}.json"
+
+
+def _read_cached_layers(path: Path) -> list[tuple[str, dict[str, object]]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    layers = payload.get("layers")
+    if not isinstance(layers, list):
+        raise ValueError("Geometry cache did not contain layers")
+    result = []
+    for layer in layers:
+        if not isinstance(layer, dict):
+            raise ValueError("Geometry cache contained an invalid layer")
+        layer_url = layer.get("url")
+        geojson = layer.get("geojson")
+        if not isinstance(layer_url, str) or not isinstance(geojson, dict):
+            raise ValueError("Geometry cache contained invalid layer data")
+        result.append((layer_url, geojson))
+    if not result:
+        raise ValueError("Geometry cache contained no layers")
+    return result
+
+
+def _write_cached_layers(
+    path: Path,
+    layers: list[tuple[str, dict[str, object]]],
+) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(
+        {
+            "type": "ArcGISLayerCollection",
+            "layers": [
+                {"url": layer_url, "geojson": geojson}
+                for layer_url, geojson in layers
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f"{path.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(content)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink()
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def load_arcgis_layers_cached(
+    url: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    cache_dir: str | Path = DEFAULT_GEOMETRY_CACHE_DIR,
+    max_age_seconds: int = GEOMETRY_CACHE_MAX_AGE_SECONDS,
+    max_layers: int = 20,
+) -> tuple[list[tuple[str, dict[str, object]]], list[str]]:
+    """Load ArcGIS layers from a persistent cache, refreshing stale entries."""
+    cache_path = _cache_path(url, Path(cache_dir))
+    connection = connect(db_path)
+    try:
+        record = connection.execute(
+            "SELECT * FROM geometry_cache WHERE source_url=?", (url,)
+        ).fetchone()
+        if record and record["status"] == "complete" and cache_path.exists():
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(record["retrieved_at"])
+            if age.total_seconds() <= max_age_seconds:
+                try:
+                    return _read_cached_layers(cache_path), []
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+
+        try:
+            layers, errors = load_arcgis_layers(url, max_layers)
+            if errors:
+                return layers, errors
+            checksum = _write_cached_layers(cache_path, layers)
+            connection.execute(
+                """
+                INSERT INTO geometry_cache
+                    (source_url, format, geojson_path, retrieved_at, checksum, status, error)
+                VALUES (?, 'geojson', ?, ?, ?, 'complete', NULL)
+                ON CONFLICT(source_url) DO UPDATE SET
+                    format=excluded.format, geojson_path=excluded.geojson_path,
+                    retrieved_at=excluded.retrieved_at, checksum=excluded.checksum,
+                    status=excluded.status, error=excluded.error
+                """,
+                (url, str(cache_path), utc_now(), checksum),
+            )
+            connection.commit()
+            return layers, []
+        except (OSError, requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+            if record and record["status"] == "complete" and cache_path.exists():
+                try:
+                    warning = f"Using stale geometry cache: {type(exc).__name__}: {exc}"
+                    connection.execute(
+                        "UPDATE geometry_cache SET error=? WHERE source_url=?",
+                        (warning, url),
+                    )
+                    connection.commit()
+                    return _read_cached_layers(cache_path), [warning]
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            connection.execute(
+                """
+                INSERT INTO geometry_cache
+                    (source_url, format, geojson_path, retrieved_at, checksum, status, error)
+                VALUES (?, 'geojson', ?, ?, '', 'failed', ?)
+                ON CONFLICT(source_url) DO UPDATE SET
+                    retrieved_at=excluded.retrieved_at, status=excluded.status,
+                    error=excluded.error
+                """,
+                (url, str(cache_path), utc_now(), f"{type(exc).__name__}: {exc}"),
+            )
+            connection.commit()
+            raise
+    finally:
+        connection.close()
 
 
 def load_arcgis_geojson(

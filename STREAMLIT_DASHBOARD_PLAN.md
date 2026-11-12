@@ -32,9 +32,10 @@ does not require highly granular map interactions.
 
 The current Streamlit app implements the city table, city detail view,
 imported metadata, source records, validation history, notifications, and
-live ArcGIS layer rendering. The map currently loads ArcGIS layers directly
-when a city is selected; it does not yet implement the planned cached,
-format-independent geometry pipeline.
+live ArcGIS layer rendering. ArcGIS layers are now persisted as GeoJSON under
+`data\geometry_cache\`, tracked in SQLite, and reused for 24 hours before
+refresh. The cache is ArcGIS-specific; the planned format-independent
+GeoJSON/Shapefile/KMZ pipeline is still deferred.
 
 ### Data layer
 
@@ -105,7 +106,8 @@ display the resulting records.
 1. ~~Add database query helpers for listing cities and loading city details.~~
 2. ~~Replace the current poller-only page with a city database table.~~
 3. ~~Add the city detail view and validation history.~~
-4. Add geometry retrieval, caching, and format conversion.
+4. ~~Add ArcGIS geometry retrieval and caching.~~ Add format conversion for
+   GeoJSON, Shapefile, and KMZ sources.
 5. ~~Add map rendering for the selected city.~~
 6. Add the standalone nightly poll command.
 7. Add notification filtering and acknowledgement behavior.
