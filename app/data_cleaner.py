@@ -55,8 +55,17 @@ if run_poller:
     try:
         if not DEFAULT_DB_PATH.exists():
             import_csv_files(source_files)
-        with st.spinner("Polling imported zoning sources..."):
-            result = poll_database()
+        progress_bar = st.progress(0, text="Starting poller...")
+        poll_status = st.empty()
+
+        def update_poll_progress(current: int, total: int, message: str) -> None:
+            fraction = current / total if total else 0
+            progress_bar.progress(min(fraction, 1.0), text=message)
+            poll_status.caption(message)
+
+        result = poll_database(progress=update_poll_progress)
+        progress_bar.progress(1.0, text="Poller complete")
+        poll_status.success("Poller finished successfully.")
         st.session_state["poll_result"] = result
         st.session_state["poll_notifications"] = list_latest_poll_results()
         st.sidebar.success(

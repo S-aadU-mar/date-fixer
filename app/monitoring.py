@@ -8,7 +8,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 
@@ -80,9 +80,16 @@ def utc_now() -> str:
 def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
+    try:
+        connection.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:
+        # Another poll may be finishing its write transaction; the busy timeout
+        # still protects normal reads/writes when WAL cannot be enabled.
+        pass
     connection.executescript(SCHEMA)
     return connection
 
@@ -212,7 +219,10 @@ def _poll_row(location: sqlite3.Row, sources: list[sqlite3.Row]) -> pd.Series:
     return pd.Series(values)
 
 
-def poll_database(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, int]:
+def poll_database(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, int]:
     """Poll every imported location and persist observations and update alerts."""
     connection = connect(db_path)
     started = utc_now()
@@ -222,7 +232,15 @@ def poll_database(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, int]:
     counts = {"checked": 0, "updated": 0, "review": 0}
     try:
         locations = connection.execute("SELECT * FROM locations ORDER BY name").fetchall()
-        for location in locations:
+        total = len(locations)
+        for index, location in enumerate(locations, start=1):
+            if progress:
+                progress(
+                    index - 1,
+                    total,
+                    f"Checking {location['name']}, {location['state']} "
+                    f"({index} of {total})...",
+                )
             sources = connection.execute(
                 "SELECT * FROM sources WHERE location_id=? ORDER BY kind, id",
                 (location["id"],),
@@ -268,6 +286,13 @@ def poll_database(db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, int]:
                      observed_at),
                 )
             counts["checked"] += 1
+            if progress:
+                progress(
+                    index,
+                    total,
+                    f"Checked {location['name']}, {location['state']} "
+                    f"({index} of {total})",
+                )
         connection.execute(
             """
             UPDATE poll_runs SET completed_at=?, status='complete',
