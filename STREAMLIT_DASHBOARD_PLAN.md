@@ -28,6 +28,14 @@ Continue using Streamlit for the prototype. The dashboard should provide:
 Streamlit is appropriate while the prototype has a small number of users and
 does not require highly granular map interactions.
 
+### Current implementation status
+
+The current Streamlit app implements the city table, city detail view,
+imported metadata, source records, validation history, notifications, and
+live ArcGIS layer rendering. The map currently loads ArcGIS layers directly
+when a city is selected; it does not yet implement the planned cached,
+format-independent geometry pipeline.
+
 ### Data layer
 
 Continue using SQLite for the prototype. The existing schema already supports:
@@ -94,11 +102,11 @@ display the resulting records.
 
 ## Recommended Implementation Order
 
-1. Add database query helpers for listing cities and loading city details.
-2. Replace the current poller-only page with a city database table.
-3. Add the city detail view and validation history.
-4. Add geometry retrieval and format conversion.
-5. Add map rendering for the selected city.
+1. ~~Add database query helpers for listing cities and loading city details.~~
+2. ~~Replace the current poller-only page with a city database table.~~
+3. ~~Add the city detail view and validation history.~~
+4. Add geometry retrieval, caching, and format conversion.
+5. ~~Add map rendering for the selected city.~~
 6. Add the standalone nightly poll command.
 7. Add notification filtering and acknowledgement behavior.
 8. Add focused tests for database queries, geometry conversion, and poll
@@ -106,12 +114,17 @@ display the resulting records.
 
 ## Scope Boundaries
 
-Do not migrate to Dash or a separate frontend yet. Reconsider that decision
-when the project requires many concurrent users, permissions, large geometry
-datasets, or frequent interactive map filtering.
+Do not migrate to Dash or a separate frontend yet. The current prototype is
+ready for evaluating alternatives, but migration should wait until the project
+requires many concurrent users, permissions, large geometry datasets, or
+frequent interactive map filtering. Those requirements should be demonstrated
+with expected usage and performance needs rather than treated as a technology
+upgrade by itself.
 
 Do not run APScheduler inside the Streamlit process. The scheduler and
 dashboard should remain independently restartable.
 
 PostgreSQL/PostGIS can replace SQLite later if spatial queries, concurrent
-writes, or larger datasets require it.
+writes, or larger datasets require it. Any frontend migration should keep the
+polling process independent from the web application and preserve the existing
+monitoring records and alert behavior.
