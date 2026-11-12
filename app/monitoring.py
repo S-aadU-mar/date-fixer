@@ -402,11 +402,11 @@ def get_location_details(
         connection.close()
 
 
-def load_arcgis_geojson(
+def load_arcgis_layers(
     url: str,
     max_layers: int = 20,
-) -> tuple[dict[str, object], list[str], list[str]]:
-    """Load ArcGIS feature layers as one GeoJSON FeatureCollection."""
+) -> tuple[list[tuple[str, dict[str, object]]], list[str]]:
+    """Load each ArcGIS feature layer as a GeoJSON FeatureCollection."""
     service_url = url.split("?", 1)[0].rstrip("/")
     if re.search(r"/\d+$", service_url):
         layer_urls = [service_url]
@@ -420,8 +420,7 @@ def load_arcgis_geojson(
     if not layer_urls:
         raise ValueError(f"No feature layers were found at {service_url}")
 
-    features: list[dict[str, object]] = []
-    loaded_layers: list[str] = []
+    loaded_layers: list[tuple[str, dict[str, object]]] = []
     errors: list[str] = []
     for layer_url in layer_urls:
         try:
@@ -445,18 +444,28 @@ def load_arcgis_geojson(
             layer_features = payload.get("features")
             if not isinstance(layer_features, list):
                 raise ValueError("ArcGIS response did not contain GeoJSON features")
-            features.extend(feature for feature in layer_features if isinstance(feature, dict))
-            loaded_layers.append(layer_url)
+            loaded_layers.append((layer_url, payload))
         except (requests.RequestException, ValueError) as exc:
             errors.append(f"{layer_url}: {type(exc).__name__}: {exc}")
 
     if not loaded_layers:
         raise ValueError("Unable to load any ArcGIS layers. " + " | ".join(errors))
-    return (
-        {"type": "FeatureCollection", "features": features},
-        loaded_layers,
-        errors,
-    )
+    return loaded_layers, errors
+
+
+def load_arcgis_geojson(
+    url: str,
+    max_layers: int = 20,
+) -> tuple[dict[str, object], list[str], list[str]]:
+    """Load ArcGIS feature layers as one GeoJSON FeatureCollection."""
+    layers, errors = load_arcgis_layers(url, max_layers)
+    features = [
+        feature
+        for _, payload in layers
+        for feature in payload.get("features", [])
+        if isinstance(feature, dict)
+    ]
+    return {"type": "FeatureCollection", "features": features}, [url for url, _ in layers], errors
 
 
 def count_open_alerts(db_path: str | Path = DEFAULT_DB_PATH) -> int:

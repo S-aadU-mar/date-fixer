@@ -11,7 +11,7 @@ from monitoring import (
     count_open_alerts,
     get_location_details,
     import_csv_files,
-    load_arcgis_geojson,
+    load_arcgis_layers,
     list_alerts,
     list_locations,
     poll_database,
@@ -181,16 +181,49 @@ else:
                     )
                     if arcgis_urls:
                         try:
-                            geojson, loaded_layers, layer_errors = load_arcgis_geojson(
+                            loaded_layers, layer_errors = load_arcgis_layers(
                                 arcgis_urls[0]
                             )
-                            geojson_layer = folium.GeoJson(
-                                geojson,
-                                name="Zoning layers",
-                            ).add_to(city_map)
-                            bounds = geojson_layer.get_bounds()
-                            if bounds != [[None, None], [None, None]]:
-                                city_map.fit_bounds(bounds)
+                            all_bounds = []
+                            for layer_url, layer_geojson in loaded_layers:
+                                features = layer_geojson.get("features", [])
+                                properties = (
+                                    features[0].get("properties", {})
+                                    if features and isinstance(features[0], dict)
+                                    else {}
+                                )
+                                fields = list(properties)[:8]
+                                layer_name = layer_url.rsplit("/", 1)[-1]
+                                geojson_layer = folium.GeoJson(
+                                    layer_geojson,
+                                    name=f"Layer {layer_name}",
+                                    tooltip=(
+                                        folium.GeoJsonTooltip(fields=fields)
+                                        if fields
+                                        else None
+                                    ),
+                                    popup=(
+                                        folium.GeoJsonPopup(fields=fields)
+                                        if fields
+                                        else None
+                                    ),
+                                ).add_to(city_map)
+                                all_bounds.append(geojson_layer.get_bounds())
+                            if all_bounds:
+                                points = [
+                                    point
+                                    for bounds in all_bounds
+                                    for point in bounds
+                                    if all(value is not None for value in point)
+                                ]
+                                if points:
+                                    city_map.fit_bounds(
+                                        [
+                                            [min(point[0] for point in points), min(point[1] for point in points)],
+                                            [max(point[0] for point in points), max(point[1] for point in points)],
+                                        ]
+                                    )
+                            folium.LayerControl().add_to(city_map)
                             st.caption(f"Loaded {len(loaded_layers)} zoning layer(s).")
                             if layer_errors:
                                 st.warning(
