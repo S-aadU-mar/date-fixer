@@ -27,8 +27,12 @@ st.markdown(
     .block-container { padding-top: 2.5rem; padding-bottom: 3rem; }
     .hero { padding: 1.4rem 1.6rem; border-radius: 18px; color: white;
             background: linear-gradient(120deg, #2534B0, #126E82); margin-bottom: 1.5rem; }
+    .hero { position: relative; }
     .hero h1 { margin: 0; font-size: 2.25rem; }
     .hero p { margin: .35rem 0 0; opacity: .85; }
+    .notification-badge { display: inline-block; margin-top: .8rem; padding: .3rem .7rem;
+                          border-radius: 999px; background: rgba(0, 0, 0, .22);
+                          font-size: .9rem; }
     .city-details { border-bottom: 1px solid rgba(128, 128, 128, .35);
                     margin-bottom: 1rem; padding-bottom: .35rem; }
     [data-testid="stMetric"] {
@@ -44,19 +48,59 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+open_alerts = count_open_alerts()
+notification_label = (
+    f"🔔 {open_alerts} issue(s) need attention"
+    if open_alerts
+    else "🔔 No open issues"
+)
 st.markdown(
     '<div class="hero"><h1>Zoning database</h1>'
-    "<p>Browse city source records and review validation issues from the latest poll.</p></div>",
+    "<p>Browse city source records and review validation issues from the latest poll.</p>"
+    f'<div class="notification-badge">{notification_label}</div></div>',
     unsafe_allow_html=True,
 )
 
 with st.sidebar:
-    open_alerts = count_open_alerts()
     st.header(f"Notifications ({open_alerts})")
-    if open_alerts:
-        st.warning(f"{open_alerts} issue(s) need attention.")
-        st.dataframe(list_alerts().drop(columns=["acknowledged_at"], errors="ignore"),
-                     use_container_width=True, hide_index=True)
+    alerts = list_alerts()
+    if "type" not in alerts.columns:
+        if "event_type" in alerts.columns:
+            alerts = alerts.rename(columns={"event_type": "type"})
+        else:
+            alerts["type"] = alerts.apply(
+                lambda row: "updated"
+                if str(row.get("message", "")).startswith("Attention!")
+                else "issue",
+                axis=1,
+            )
+    alerts = alerts.rename(columns={"name": "city"})
+    alerts = alerts.drop(columns=["acknowledged_at"], errors="ignore")
+    if not alerts.empty:
+        notification_view = st.radio(
+            "View",
+            ("Issues", "Updates", "All"),
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        if notification_view == "Issues":
+            alerts = alerts[alerts["type"].eq("issue")]
+        elif notification_view == "Updates":
+            alerts = alerts[alerts["type"].eq("updated")]
+        st.caption(f"{len(alerts)} notification(s)")
+        st.dataframe(
+            alerts,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "created_at": st.column_config.DatetimeColumn("When", format="YYYY-MM-DD HH:mm"),
+                "city": "City",
+                "county": "County",
+                "state": "State",
+                "type": "Type",
+                "message": "Details",
+            },
+        )
     else:
         st.success("No open validation issues.")
     st.divider()

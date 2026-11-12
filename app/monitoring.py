@@ -323,19 +323,25 @@ def poll_database(
     return counts
 
 
-def list_alerts(db_path: str | Path = DEFAULT_DB_PATH, limit: int = 50) -> pd.DataFrame:
+def list_alerts(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    limit: int = 50,
+) -> pd.DataFrame:
+    """Return unacknowledged validation alerts for the dashboard."""
+    columns = ["created_at", "city", "county", "state", "type", "message"]
     connection = connect(db_path)
     try:
         rows = connection.execute(
             """
-            SELECT a.created_at, l.name, l.county, l.state, a.message, a.acknowledged_at
+            SELECT a.created_at, l.name AS city, l.county, l.state,
+                   a.event_type AS type, a.message
             FROM alert_events a JOIN locations l ON l.id=a.location_id
-            WHERE a.acknowledged_at IS NULL AND a.event_type != 'updated'
+            WHERE a.acknowledged_at IS NULL
             ORDER BY a.created_at DESC LIMIT ?
             """,
             (limit,),
         ).fetchall()
-        return pd.DataFrame([dict(row) for row in rows])
+        return pd.DataFrame([dict(row) for row in rows], columns=columns)
     finally:
         connection.close()
 
