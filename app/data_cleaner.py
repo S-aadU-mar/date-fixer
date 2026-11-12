@@ -1,7 +1,9 @@
 from pathlib import Path
 import sqlite3
 
+import folium
 import streamlit as st
+from streamlit_folium import st_folium
 
 from monitoring import (
     DEFAULT_DB_PATH,
@@ -163,6 +165,22 @@ else:
                 detail_columns = st.columns(2)
                 detail_columns[0].write(f"**County:** {location['county'] or '—'}")
                 detail_columns[1].write(f"**Source file:** {location['source_file'] or '—'}")
+                with st.container(border=True):
+                    st.subheader("Map")
+                    st.caption(
+                        "Leaflet map container ready for the selected city's zoning geometry."
+                    )
+                    city_map = folium.Map(
+                        location=[39.8283, -98.5795],
+                        zoom_start=4,
+                        tiles="OpenStreetMap",
+                    )
+                    st_folium(
+                        city_map,
+                        use_container_width=True,
+                        height=500,
+                        key=f"city-map-{location_id}",
+                    )
                 with st.expander("Imported attributes", expanded=True):
                     st.json(metadata)
                 st.markdown("#### Sources")
