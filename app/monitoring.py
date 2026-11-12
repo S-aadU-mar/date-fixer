@@ -300,3 +300,33 @@ def list_alerts(db_path: str | Path = DEFAULT_DB_PATH, limit: int = 50) -> pd.Da
         return pd.DataFrame([dict(row) for row in rows])
     finally:
         connection.close()
+
+
+def list_latest_poll_results(
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Return update and review observations from the latest completed poll."""
+    columns = [
+        "city", "county", "state", "status", "observed_date",
+        "source", "url", "issue", "observed_at",
+    ]
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT l.name AS city, l.county, l.state, o.status, o.observed_date,
+                   o.source, o.url, o.issue, o.observed_at
+            FROM observations o
+            JOIN locations l ON l.id=o.location_id
+            WHERE o.poll_run_id = (
+                SELECT id FROM poll_runs
+                WHERE status='complete'
+                ORDER BY id DESC LIMIT 1
+            )
+            AND o.status IN ('updated', 'review', 'changed')
+            ORDER BY CASE o.status WHEN 'updated' THEN 0 ELSE 1 END, l.name
+            """,
+        ).fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=columns)
+    finally:
+        connection.close()
