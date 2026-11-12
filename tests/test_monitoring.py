@@ -3,6 +3,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import Mock
 
 import pandas as pd
 
@@ -98,6 +99,30 @@ class MonitoringTests(unittest.TestCase):
         import_csv_files([self.csv_path], self.db_path)
         poll_database(self.db_path)
         self.assertEqual(count_open_alerts(self.db_path), 1)
+
+    @patch("app.monitoring.get_json_fallback", return_value={"layers": [{"id": 0}, {"id": 1}]})
+    @patch("app.monitoring.session.get")
+    def test_load_arcgis_geojson_reads_all_service_layers(self, get, get_json):
+        responses = []
+        for zone_code in ("A", "B"):
+            response = Mock()
+            response.json.return_value = {
+                "type": "FeatureCollection",
+                "features": [{"type": "Feature", "properties": {"ZONE": zone_code}}],
+            }
+            responses.append(response)
+        get.side_effect = responses
+
+        from app.monitoring import load_arcgis_geojson
+
+        geojson, loaded_layers, errors = load_arcgis_geojson(
+            "https://example.test/FeatureServer"
+        )
+
+        self.assertEqual(len(geojson["features"]), 2)
+        self.assertEqual(len(loaded_layers), 2)
+        self.assertEqual(errors, [])
+        self.assertEqual(get.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from pathlib import Path
 import sqlite3
 
 import folium
+import requests
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -10,6 +11,7 @@ from monitoring import (
     count_open_alerts,
     get_location_details,
     import_csv_files,
+    load_arcgis_geojson,
     list_alerts,
     list_locations,
     poll_database,
@@ -167,14 +169,37 @@ else:
                 detail_columns[1].write(f"**Source file:** {location['source_file'] or '—'}")
                 with st.container(border=True):
                     st.subheader("Map")
-                    st.caption(
-                        "Leaflet map container ready for the selected city's zoning geometry."
-                    )
                     city_map = folium.Map(
                         location=[39.8283, -98.5795],
                         zoom_start=4,
                         tiles="OpenStreetMap",
                     )
+                    arcgis_urls = tuple(
+                        source["url"]
+                        for source in details["sources"].to_dict("records")
+                        if source["kind"] == "arcgis"
+                    )
+                    if arcgis_urls:
+                        try:
+                            geojson, loaded_layers, layer_errors = load_arcgis_geojson(
+                                arcgis_urls[0]
+                            )
+                            geojson_layer = folium.GeoJson(
+                                geojson,
+                                name="Zoning layers",
+                            ).add_to(city_map)
+                            bounds = geojson_layer.get_bounds()
+                            if bounds != [[None, None], [None, None]]:
+                                city_map.fit_bounds(bounds)
+                            st.caption(f"Loaded {len(loaded_layers)} zoning layer(s).")
+                            if layer_errors:
+                                st.warning(
+                                    f"{len(layer_errors)} layer(s) could not be loaded."
+                                )
+                        except (OSError, requests.RequestException, ValueError) as exc:
+                            st.error(f"Could not load zoning layers: {exc}")
+                    else:
+                        st.info("No ArcGIS endpoint is available for this city.")
                     st_folium(
                         city_map,
                         use_container_width=True,

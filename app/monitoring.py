@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import pandas as pd
+import requests
 
 try:
-    from .functions import find_date, split_urls
+    from .functions import TIMEOUT, find_date, get_json_fallback, session, split_urls
 except ImportError:
-    from functions import find_date, split_urls
+    from functions import TIMEOUT, find_date, get_json_fallback, session, split_urls
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "monitoring.sqlite3"
@@ -399,6 +400,63 @@ def get_location_details(
         }
     finally:
         connection.close()
+
+
+def load_arcgis_geojson(
+    url: str,
+    max_layers: int = 20,
+) -> tuple[dict[str, object], list[str], list[str]]:
+    """Load ArcGIS feature layers as one GeoJSON FeatureCollection."""
+    service_url = url.split("?", 1)[0].rstrip("/")
+    if re.search(r"/\d+$", service_url):
+        layer_urls = [service_url]
+    else:
+        service = get_json_fallback(service_url)
+        layer_urls = [
+            f"{service_url}/{layer['id']}"
+            for layer in (service.get("layers") or [])[:max_layers]
+            if layer.get("id") is not None
+        ]
+    if not layer_urls:
+        raise ValueError(f"No feature layers were found at {service_url}")
+
+    features: list[dict[str, object]] = []
+    loaded_layers: list[str] = []
+    errors: list[str] = []
+    for layer_url in layer_urls:
+        try:
+            response = session.get(
+                f"{layer_url}/query",
+                params={
+                    "where": "1=1",
+                    "outFields": "*",
+                    "outSR": "4326",
+                    "returnGeometry": "true",
+                    "f": "geojson",
+                },
+                timeout=TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("ArcGIS response was not a JSON object")
+            if payload.get("error"):
+                raise ValueError(payload["error"].get("message", "ArcGIS query failed"))
+            layer_features = payload.get("features")
+            if not isinstance(layer_features, list):
+                raise ValueError("ArcGIS response did not contain GeoJSON features")
+            features.extend(feature for feature in layer_features if isinstance(feature, dict))
+            loaded_layers.append(layer_url)
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f"{layer_url}: {type(exc).__name__}: {exc}")
+
+    if not loaded_layers:
+        raise ValueError("Unable to load any ArcGIS layers. " + " | ".join(errors))
+    return (
+        {"type": "FeatureCollection", "features": features},
+        loaded_layers,
+        errors,
+    )
 
 
 def count_open_alerts(db_path: str | Path = DEFAULT_DB_PATH) -> int:
