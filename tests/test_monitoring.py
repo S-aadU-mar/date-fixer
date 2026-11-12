@@ -6,7 +6,14 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from app.monitoring import connect, import_csv_files, poll_database
+from app.monitoring import (
+    connect,
+    count_open_alerts,
+    get_location_details,
+    import_csv_files,
+    list_locations,
+    poll_database,
+)
 
 
 class MonitoringTests(unittest.TestCase):
@@ -48,6 +55,18 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(second["locations"], 1)
         self.assertEqual(second["sources"], 0)
 
+    def test_locations_and_details_are_available_without_polling(self):
+        import_csv_files([self.csv_path], self.db_path)
+        locations = list_locations(self.db_path)
+        self.assertEqual(
+            locations[["city", "county", "state", "url"]].iloc[0].tolist(),
+            ["Example", "Example County", "CA", "https://example.test/FeatureServer/0"],
+        )
+        details = get_location_details(int(locations.iloc[0]["location_id"]), self.db_path)
+        self.assertIsNotNone(details)
+        self.assertEqual(details["location"]["name"], "Example")
+        self.assertEqual(len(details["sources"]), 1)
+
     @patch("app.monitoring.find_date", return_value=(date(2026, 1, 2), "endpoint", "https://example.test/FeatureServer/0", [], []))
     def test_first_poll_is_baseline(self, find_date):
         import_csv_files([self.csv_path], self.db_path)
@@ -73,6 +92,12 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(connection.execute("SELECT status FROM observations ORDER BY id DESC").fetchone()[0], "updated")
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM alert_events").fetchone()[0], 1)
         connection.close()
+
+    @patch("app.monitoring.find_date", return_value=(None, None, None, [], ["URL is inaccessible"]))
+    def test_review_creates_open_issue_alert(self, find_date):
+        import_csv_files([self.csv_path], self.db_path)
+        poll_database(self.db_path)
+        self.assertEqual(count_open_alerts(self.db_path), 1)
 
 
 if __name__ == "__main__":

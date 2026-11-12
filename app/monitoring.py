@@ -267,6 +267,8 @@ def poll_database(
             else:
                 status = "changed"
                 observed_date = date.isoformat()
+                issue = "Observed date is earlier than the previous value"
+                counts["review"] += 1
             observation_id = connection.execute(
                 """
                 INSERT INTO observations
@@ -283,6 +285,16 @@ def poll_database(
                     """,
                     (location["id"], observation_id,
                      f"Attention! {location['name']} updated its zoning source date to {observed_date}.",
+                     observed_at),
+                )
+            elif status in ("review", "changed"):
+                connection.execute(
+                    """
+                    INSERT INTO alert_events(location_id, observation_id, event_type, message, created_at)
+                    VALUES (?, ?, 'issue', ?, ?)
+                    """,
+                    (location["id"], observation_id,
+                     f"{location['name']}: {issue or 'source requires review'}.",
                      observed_at),
                 )
             counts["checked"] += 1
@@ -318,11 +330,83 @@ def list_alerts(db_path: str | Path = DEFAULT_DB_PATH, limit: int = 50) -> pd.Da
             """
             SELECT a.created_at, l.name, l.county, l.state, a.message, a.acknowledged_at
             FROM alert_events a JOIN locations l ON l.id=a.location_id
+            WHERE a.acknowledged_at IS NULL AND a.event_type != 'updated'
             ORDER BY a.created_at DESC LIMIT ?
             """,
             (limit,),
         ).fetchall()
         return pd.DataFrame([dict(row) for row in rows])
+    finally:
+        connection.close()
+
+
+def list_locations(db_path: str | Path = DEFAULT_DB_PATH) -> pd.DataFrame:
+    """Return the read-only city catalog shown on the dashboard."""
+    columns = ["location_id", "city", "county", "state", "url"]
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT l.id AS location_id, l.name AS city, l.county, l.state,
+                   COALESCE(GROUP_CONCAT(s.url, ' | '), '') AS url
+            FROM locations l
+            LEFT JOIN sources s ON s.location_id=l.id
+            GROUP BY l.id
+            ORDER BY l.name, l.state, l.county
+            """
+        ).fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=columns)
+    finally:
+        connection.close()
+
+
+def get_location_details(
+    location_id: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, object] | None:
+    """Return imported metadata and validation history for one location."""
+    connection = connect(db_path)
+    try:
+        location = connection.execute(
+            "SELECT * FROM locations WHERE id=?", (location_id,)
+        ).fetchone()
+        if location is None:
+            return None
+        sources = connection.execute(
+            "SELECT kind, url FROM sources WHERE location_id=? ORDER BY kind, id",
+            (location_id,),
+        ).fetchall()
+        observations = connection.execute(
+            """
+            SELECT observed_at, observed_date, status, issue, source, url
+            FROM observations
+            WHERE location_id=?
+            ORDER BY observed_at DESC, id DESC
+            """,
+            (location_id,),
+        ).fetchall()
+        return {
+            "location": dict(location),
+            "metadata": json.loads(location["raw_metadata"]),
+            "sources": pd.DataFrame([dict(row) for row in sources]),
+            "observations": pd.DataFrame([dict(row) for row in observations]),
+        }
+    finally:
+        connection.close()
+
+
+def count_open_alerts(db_path: str | Path = DEFAULT_DB_PATH) -> int:
+    """Return the number of unacknowledged validation issues."""
+    connection = connect(db_path)
+    try:
+        return connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM alert_events
+            WHERE acknowledged_at IS NULL
+              AND event_type != 'updated'
+            """
+        ).fetchone()[0]
     finally:
         connection.close()
 
