@@ -342,12 +342,12 @@ def list_alerts(
     limit: int = 50,
 ) -> pd.DataFrame:
     """Return unacknowledged validation alerts for the dashboard."""
-    columns = ["created_at", "city", "county", "state", "type", "message"]
+    columns = ["alert_id", "created_at", "city", "county", "state", "type", "message"]
     connection = connect(db_path)
     try:
         rows = connection.execute(
             """
-            SELECT a.created_at, l.name AS city, l.county, l.state,
+            SELECT a.id AS alert_id, a.created_at, l.name AS city, l.county, l.state,
                    a.event_type AS type, a.message
             FROM alert_events a JOIN locations l ON l.id=a.location_id
             WHERE a.acknowledged_at IS NULL
@@ -360,15 +360,61 @@ def list_alerts(
         connection.close()
 
 
+def acknowledge_alert(
+    alert_id: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    """Acknowledge one alert or raise if it does not exist."""
+    connection = connect(db_path)
+    try:
+        updated = connection.execute(
+            """
+            UPDATE alert_events
+            SET acknowledged_at=?
+            WHERE id=? AND acknowledged_at IS NULL
+            """,
+            (utc_now(), alert_id),
+        ).rowcount
+        if updated != 1:
+            raise ValueError(f"Alert {alert_id} was not found or is already acknowledged")
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def list_locations(db_path: str | Path = DEFAULT_DB_PATH) -> pd.DataFrame:
     """Return the read-only city catalog shown on the dashboard."""
-    columns = ["location_id", "city", "county", "state", "url"]
+    columns = [
+        "location_id", "city", "county", "state", "url",
+        "latest_status", "latest_observed_date", "open_issues",
+    ]
     connection = connect(db_path)
     try:
         rows = connection.execute(
             """
             SELECT l.id AS location_id, l.name AS city, l.county, l.state,
-                   COALESCE(GROUP_CONCAT(s.url, ' | '), '') AS url
+                   COALESCE(GROUP_CONCAT(s.url, ' | '), '') AS url,
+                   (
+                       SELECT o.status
+                       FROM observations o
+                       WHERE o.location_id=l.id
+                       ORDER BY o.observed_at DESC, o.id DESC
+                       LIMIT 1
+                   ) AS latest_status,
+                   (
+                       SELECT o.observed_date
+                       FROM observations o
+                       WHERE o.location_id=l.id
+                       ORDER BY o.observed_at DESC, o.id DESC
+                       LIMIT 1
+                   ) AS latest_observed_date,
+                   (
+                       SELECT COUNT(*)
+                       FROM alert_events a
+                       WHERE a.location_id=l.id
+                         AND a.acknowledged_at IS NULL
+                         AND a.event_type != 'updated'
+                   ) AS open_issues
             FROM locations l
             LEFT JOIN sources s ON s.location_id=l.id
             GROUP BY l.id

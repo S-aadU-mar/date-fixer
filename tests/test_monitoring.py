@@ -8,11 +8,13 @@ from unittest.mock import Mock
 import pandas as pd
 
 from app.monitoring import (
+    acknowledge_alert,
     connect,
     count_open_alerts,
     get_location_details,
     import_csv_files,
     list_locations,
+    list_alerts,
     load_arcgis_layers_cached,
     poll_database,
 )
@@ -100,6 +102,28 @@ class MonitoringTests(unittest.TestCase):
         import_csv_files([self.csv_path], self.db_path)
         poll_database(self.db_path)
         self.assertEqual(count_open_alerts(self.db_path), 1)
+
+    @patch("app.monitoring.find_date", return_value=(None, None, None, [], ["URL is inaccessible"]))
+    def test_alert_can_be_acknowledged(self, find_date):
+        import_csv_files([self.csv_path], self.db_path)
+        poll_database(self.db_path)
+        alert_id = int(list_alerts(self.db_path).iloc[0]["alert_id"])
+
+        acknowledge_alert(alert_id, self.db_path)
+
+        self.assertEqual(count_open_alerts(self.db_path), 0)
+        self.assertTrue(list_alerts(self.db_path).empty)
+
+    @patch("app.monitoring.find_date", return_value=(date(2026, 1, 2), "endpoint", "https://example.test/FeatureServer/0", [], []))
+    def test_city_catalog_includes_latest_validation_status(self, find_date):
+        import_csv_files([self.csv_path], self.db_path)
+        poll_database(self.db_path)
+
+        location = list_locations(self.db_path).iloc[0]
+
+        self.assertEqual(location["latest_status"], "baseline")
+        self.assertEqual(location["latest_observed_date"], "2026-01-02")
+        self.assertEqual(location["open_issues"], 0)
 
     @patch("app.monitoring.get_json_fallback", return_value={"layers": [{"id": 0}, {"id": 1}]})
     @patch("app.monitoring.session.get")

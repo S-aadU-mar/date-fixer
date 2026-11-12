@@ -110,7 +110,7 @@ display the resulting records.
    GeoJSON, Shapefile, and KMZ sources.
 5. ~~Add map rendering for the selected city.~~
 6. ~~Add the standalone nightly poll command.~~
-7. Add notification filtering and acknowledgement behavior.
+7. ~~Add notification filtering and acknowledgement behavior.~~
 8. Add focused tests for database queries, geometry conversion, and poll
    scheduling behavior.
 

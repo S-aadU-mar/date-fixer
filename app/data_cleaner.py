@@ -8,6 +8,7 @@ from streamlit_folium import st_folium
 
 from monitoring import (
     DEFAULT_DB_PATH,
+    acknowledge_alert,
     count_open_alerts,
     get_location_details,
     import_csv_files,
@@ -93,7 +94,7 @@ with st.sidebar:
             alerts = alerts[alerts["type"].eq("updated")]
         st.caption(f"{len(alerts)} notification(s)")
         st.dataframe(
-            alerts,
+            alerts.drop(columns=["alert_id"], errors="ignore"),
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -105,6 +106,24 @@ with st.sidebar:
                 "message": "Details",
             },
         )
+        issue_alerts = alerts[alerts["type"].eq("issue")]
+        if not issue_alerts.empty:
+            alert_ids = issue_alerts["alert_id"].astype(int).tolist()
+            selected_alert_id = st.selectbox(
+                "Issue to acknowledge",
+                alert_ids,
+                format_func=lambda alert_id: (
+                    f"#{alert_id}: "
+                    f"{issue_alerts.loc[issue_alerts['alert_id'].eq(alert_id), 'message'].iloc[0]}"
+                ),
+            )
+            if st.button("Acknowledge selected issue", use_container_width=True):
+                try:
+                    acknowledge_alert(selected_alert_id)
+                    st.success(f"Issue #{selected_alert_id} acknowledged.")
+                    st.rerun()
+                except (OSError, sqlite3.Error, ValueError) as exc:
+                    st.error(f"Could not acknowledge issue: {type(exc).__name__}: {exc}")
     else:
         st.success("No open validation issues.")
     st.divider()
@@ -150,6 +169,11 @@ else:
         on_select="rerun",
         selection_mode="single-row",
         key="city_catalog",
+        column_config={
+            "latest_status": "Latest validation",
+            "latest_observed_date": "Latest source date",
+            "open_issues": st.column_config.NumberColumn("Open issues", format="%d"),
+        },
     )
     selected_rows = selected.selection.rows
     if selected_rows:

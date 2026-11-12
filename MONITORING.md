@@ -39,8 +39,9 @@ The generated database is `data\monitoring.sqlite3` and is ignored by Git.
 Update events are stored in the `alert_events` table for later delivery through
 email, Slack, or an authenticated dashboard. The Streamlit button remains
 available for manual checks; scheduled polling should use the independent
-command above. Employee authentication, alert acknowledgement, and support
-for non-ArcGIS geometry formats remain deferred.
+command above. Notifications can be filtered and issue alerts can be
+acknowledged from the dashboard. Employee authentication and support for
+non-ArcGIS geometry formats remain deferred.
 
 ## Current frontend decision
 
